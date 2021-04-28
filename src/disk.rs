@@ -4,6 +4,7 @@ use std::path::Path;
 
 pub const PAGE_SIZE: usize = 4096;
 
+#[derive(Clone, Copy, Eq, PartialEq, Hash)]
 pub struct PageId(pub u64);
 impl PageId {
     pub const INVALID_PAGE_ID: PageId = PageId(u64::MAX);

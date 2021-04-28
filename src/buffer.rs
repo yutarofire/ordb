@@ -1,9 +1,18 @@
 use std::cell::{RefCell, Cell};
 use std::collections::HashMap;
+use std::io;
 use std::ops::{Index, IndexMut};
 use std::rc::Rc;
 
 use crate::disk::{DiskManager, PageId, PAGE_SIZE};
+
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error(transparent)]
+    Io(#[from] io::Error),
+    #[error("no free buffer available in buffer pool")]
+    NoFreeBuffer,
+}
 
 #[derive(Default, Clone, Copy)]
 pub struct BufferId(usize);
@@ -98,4 +107,47 @@ pub struct BufferPoolManager {
     disk: DiskManager,
     pool: BufferPool,
     page_table: HashMap<PageId, BufferId>,
+}
+
+impl BufferPoolManager {
+    pub fn new(disk: DiskManager, pool: BufferPool) -> Self {
+        let page_table = HashMap::new();
+        Self {
+            disk,
+            pool,
+            page_table,
+        }
+    }
+
+    pub fn fetch_page(&mut self, page_id: PageId) -> Result<Rc<Buffer>, Error> {
+        // Case the page is in the buffer pool.
+        if let Some(&buffer_id) = self.page_table.get(&page_id) {
+            let frame = &mut self.pool[buffer_id];
+            frame.usage_count += 1;
+            return Ok(frame.buffer.clone());
+        }
+
+        // Case the page is not is the buffer pool.
+        let buffer_id = self.pool.evict().ok_or(Error::NoFreeBuffer)?;
+        let frame = &mut self.pool[buffer_id];
+        let evict_page_id = frame.buffer.page_id;
+        {
+            let buffer = Rc::get_mut(&mut frame.buffer).unwrap();
+            // Write current data into the disk, if needed.
+            if buffer.is_dirty.get() {
+                self.disk.write_page_data(evict_page_id, buffer.page.get_mut())?;
+            }
+
+            // Set values and data to newly assigned buffer.
+            buffer.page_id = page_id;
+            buffer.is_dirty.set(false);
+            self.disk.read_page_data(page_id, buffer.page.get_mut())?;
+            frame.usage_count = 1;
+        }
+        let page = Rc::clone(&frame.buffer);
+        // Update buffer table.
+        self.page_table.remove(&evict_page_id);
+        self.page_table.insert(page_id, buffer_id);
+        Ok(page)
+    }
 }
